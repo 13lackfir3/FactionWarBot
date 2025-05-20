@@ -56,7 +56,7 @@ const client = new Client({
 
 let watchedFactions = [];
 const hospitalCache  = new Map(); // factionId → Set of memberIds
-const hospitalTimers = new Map(); // memberId → timeout handle
+const hospitalTimers = new Map(); // memberId → { timer, releaseAt, channelId }
 
 // the core scheduling logic for one faction
 async function scheduleHospitalTimersFor(factionId, channelId) {
@@ -82,12 +82,15 @@ async function scheduleHospitalTimersFor(factionId, channelId) {
         clearTimeout(existing.timer);
         console.log(`🗑️  Cleared old timer for ${m.name}(${m.id})`);
       }
-      console.log(`⏱ [Immediate] Scheduling ping for ${m.name}(${m.id}) in ${msUntilAlert}ms (at ${new Date(releaseAt - 8000).toLocaleTimeString()})`);
+      console.log(`⏱ [Immediate] Scheduling ping for ${m.name}(${m.id}) in ${msUntilAlert}ms`);
       const timer = setTimeout(async () => {
         console.log(`📣 Timer fired for ${m.name}(${m.id}), pinging @everyone in channel ${channelId}`);
         try {
           const ch = await client.channels.fetch(channelId);
-          await ch.send(`@everyone **${m.name}** is leaving the hospital in 8 seconds!`);
+          await ch.send(
+            `@everyone **${m.name}** is leaving the hospital in 8 seconds!\n` +
+            `<https://www.torn.com/loader2.php?sid=getInAttack&user2ID=${m.id}>`
+          );
         } catch (err) {
           console.error(`❌ Failed to send hospital-alert for member ${m.id}:`, err);
         }
