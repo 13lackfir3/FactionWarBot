@@ -25,7 +25,7 @@ const HOSPITAL_INTERVAL    = (parseInt(process.env.HOSPITAL_INTERVAL, 10) || 300
 const SNAPSHOT_INTERVAL    = 15 * 60 * 1000;
 const ATTACK_POLL_INTERVAL = 10 * 1000;
 
-// Models & services
+// Services & models
 const { pollFactionMembers }  = require('./services/pollFaction');
 const { pollFactionHospital } = require('./services/pollFactionHospital');
 const EnemyFaction            = require('./models/EnemyFaction');
@@ -95,45 +95,77 @@ async function upsertFactionSnapshot() {
   );
 }
 
-// Stub functions for hospital timers & attacks
+// Hospital monitoring state
+const hospitalCache  = new Map(); // factionId -> Set of memberIds
+const hospitalTimers = new Map(); // memberId  -> { timer, releaseAt, channelId }
+
+// Core hospital scheduling logic for one faction
 async function scheduleHospitalTimersFor(factionId) {
-  // TODO
-}
-async function pollFactionAttacks() {
-  const url = `https://api.torn.com/v2/faction/attacks?limit=100&sort=DESC&key=${TORN_API_KEY}`;
-  const res = await axios.get(url);
-  if (res.data.error) throw new Error(res.data.error.error);
-  return res.data.attacks;
-}
-async function handleAttacks() {
-  // TODO
+  const now = Date.now();
+  const raw   = await pollFactionHospital(factionId);
+  const members = transformMembers(raw);
+  const hospitalized = members.filter(m => m.status.state === 'Hospital');
+
+  const prevSet    = hospitalCache.get(factionId) || new Set();
+  const currentSet = new Set(hospitalized.map(m => m.memberId));
+
+  // schedule new alerts
+  for (const m of hospitalized) {
+    if (!m.status.until) continue;
+    const releaseAt    = m.status.until.getTime();
+    const msUntilAlert = releaseAt - now - 10000; // 10s before
+    const existing     = hospitalTimers.get(m.memberId);
+    if (msUntilAlert > 0 && (!existing || existing.releaseAt !== releaseAt)) {
+      if (existing) clearTimeout(existing.timer);
+      const channelId = watchedFactions.find(w => w.factionId === factionId).channelId;
+      const timer = setTimeout(async () => {
+        try {
+          const ch = await client.channels.fetch(channelId);
+          await ch.send(`@everyone **${m.name}** leaving hospital in 10s! <https://www.torn.com/loader2.php?sid=getInAttack&user2ID=${m.memberId}>`);
+        } catch (err) {
+          console.error('Hospital alert send failed:', err);
+        }
+        hospitalTimers.delete(m.memberId);
+      }, msUntilAlert);
+      hospitalTimers.set(m.memberId, { timer, releaseAt, channelId });
+    }
+  }
+
+  // cancel recovered
+  for (const prevId of prevSet) {
+    if (!currentSet.has(prevId) && hospitalTimers.has(prevId)) {
+      clearTimeout(hospitalTimers.get(prevId).timer);
+      hospitalTimers.delete(prevId);
+    }
+  }
+  hospitalCache.set(factionId, currentSet);
 }
 
 // Slash commands
 const commands = [
-  { name: 'start', description: 'Start monitoring a faction', options: [
-      { name: 'id', type: 4, description: 'Faction ID to monitor', required: true },
-      { name: 'reason', type: 3, description: 'Reason (war, raid, just because)', required: true, choices: [
-        { name: 'war', value: 'war' },
-        { name: 'raid', value: 'raid' },
-        { name: 'just because', value: 'just because' }
-      ] }
+  { name: 'start',    description: 'Start monitoring a faction', options: [
+      { name: 'id',   type: 4, description: 'Faction ID', required: true }
     ] },
-  { name: 'stop', description: 'Stop monitoring a faction', options: [
-      { name: 'id', type: 4, description: 'Faction ID to stop monitoring', required: true }
+  { name: 'stop',     description: 'Stop monitoring a faction',  options: [
+      { name: 'id',   type: 4, description: 'Faction ID', required: true }
     ] },
-  { name: 'revives', description: 'List revivable members in your faction' },
-  { name: 'warrevives', description: 'List revivable members in watched enemy factions', options: [
-      { name: 'id', type: 4, description: 'Select a watched faction ID', required: false, autocomplete: true }
+  { name: 'starthosp',description: 'Start hospital alerts',      options: [
+      { name: 'id',   type: 4, description: 'Faction ID', required: true }
     ] },
-  { name: 'oc', description: 'List your faction members not in OC' },
-  { name: 'cleanup', description: 'Bulk delete recent messages', options: [
-      { name: 'count', type: 4, description: 'Number of messages to delete', required: false }
+  { name: 'stophosp', description: 'Stop hospital alerts',       options: [
+      { name: 'id',   type: 4, description: 'Faction ID', required: true }
+    ] },
+  { name: 'revives',  description: 'List revivable members' },
+  { name: 'warrevives', description: 'List enemy revivable members', options: [
+      { name: 'id', type: 4, description: 'Faction ID', required: false, autocomplete: true }
+    ] },
+  { name: 'oc',        description: 'List members not in OC' },
+  { name: 'cleanup',   description: 'Bulk delete messages', options: [
+      { name: 'count', type: 4, description: 'Number to remove', required: false }
     ], defaultMemberPermissions: PermissionFlagsBits.ManageMessages.toString() },
-  { name: 'prewar', description: 'Snapshot your faction data into the database' }
+  { name: 'prewar',    description: 'Snapshot your faction data' }
 ];
 
-// Register commands
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 (async () => {
   try {
@@ -144,7 +176,7 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
     await rest.put(target, { body: commands });
     console.log('✅ Commands registered');
   } catch (error) {
-    console.error('Slash commands registration error:', error);
+    console.error('Slash registration error:', error);
   }
 })();
 
@@ -154,128 +186,101 @@ client.once('ready', () => {
   loadWatched();
   watchedFactions.forEach(w => scheduleHospitalTimersFor(w.factionId));
   upsertFactionSnapshot();
-  handleAttacks();
   setInterval(() => watchedFactions.forEach(w => scheduleHospitalTimersFor(w.factionId)), HOSPITAL_INTERVAL);
   setInterval(upsertFactionSnapshot, SNAPSHOT_INTERVAL);
-  setInterval(handleAttacks, ATTACK_POLL_INTERVAL);
 });
 
 // Interaction handling
 client.on('interactionCreate', async interaction => {
-  if (interaction.isAutocomplete() && interaction.commandName === 'warrevives') {
-    const focused = interaction.options.getFocused(true);
-    const choices = watchedFactions.map(w => w.factionId.toString());
-    const filtered = choices.filter(c => c.startsWith(focused.value));
-    return interaction.respond(filtered.map(c => ({ name: c, value: parseInt(c, 10) })));
-  }
-
   if (!interaction.isChatInputCommand()) return;
   const { commandName, options } = interaction;
+  await interaction.deferReply({ ephemeral: commandName === 'cleanup' });
 
   try {
+    let list, raw;
     switch (commandName) {
       case 'start': {
-        await interaction.deferReply({ ephemeral: true });
         const id = options.getInteger('id');
-        const reason = options.getString('reason');
         if (!watchedFactions.some(w => w.factionId === id)) {
-          watchedFactions.push({ factionId: id, channelId: interaction.channelId, reason });
+          watchedFactions.push({ factionId: id, channelId: interaction.channelId });
           saveWatched();
-          const rawMembers = await pollFactionMembers(id);
-          const members = transformMembers(rawMembers);
-          await EnemyFaction.findOneAndUpdate(
-            { factionId: id },
-            { monitoredAt: new Date(), members },
-            { upsert: true }
-          );
-          await EnemyFaction.updateOne(
-            { factionId: id },
-            { $push: { watchHistory: { reason, timestamp: new Date() } } }
-          );
-          await interaction.editReply(`✅ Now monitoring faction ${id} for '${reason}'.`);
+          raw = await pollFactionMembers(id);
+          await EnemyFaction.findOneAndUpdate({ factionId: id }, { monitoredAt: new Date(), members: raw }, { upsert: true });
+          await interaction.editReply(`✅ Monitoring faction ${id}.`);
         } else {
-          await interaction.editReply(`⚠️ Faction ${id} is already being monitored.`);
+          await interaction.editReply(`⚠️ Already monitoring ${id}.`);
         }
         break;
       }
       case 'stop': {
-        await interaction.deferReply({ ephemeral: true });
         const id = options.getInteger('id');
         watchedFactions = watchedFactions.filter(w => w.factionId !== id);
         saveWatched();
-        await interaction.editReply(`✅ Stopped monitoring faction ${id}.`);
+        await interaction.editReply(`✅ Stopped monitoring ${id}.`);
+        break;
+      }
+      case 'starthosp': {
+        const id = options.getInteger('id');
+        if (!watchedFactions.some(w => w.factionId === id)) {
+          watchedFactions.push({ factionId: id, channelId: interaction.channelId });
+          saveWatched();
+          await scheduleHospitalTimersFor(id);
+          await interaction.editReply(`✅ Hospital alerts started for faction ${id}.`);
+        } else {
+          await interaction.editReply(`⚠️ Hospital alerts already running for ${id}.`);
+        }
+        break;
+      }
+      case 'stophosp': {
+        const id = options.getInteger('id');
+        watchedFactions = watchedFactions.filter(w => w.factionId !== id);
+        saveWatched();
+        const memberIds = hospitalCache.get(id) || new Set();
+        for (const memberId of memberIds) {
+          const info = hospitalTimers.get(memberId);
+          if (info) clearTimeout(info.timer), hospitalTimers.delete(memberId);
+        }
+        hospitalCache.delete(id);
+        await interaction.editReply(`✅ Hospital alerts stopped for faction ${id}.`);
         break;
       }
       case 'revives': {
-        await interaction.deferReply();
-        const raw = await pollFactionMembers(MY_FACTION_ID);
-        const members = transformMembers(raw);
-        await Faction.findOneAndUpdate(
-          { factionId: MY_FACTION_ID },
-          { monitoredAt: new Date(), members },
-          { upsert: true }
-        );
-        const list = members.filter(m => m.isRevivable).map(m => `• ${m.name} (ID: ${m.memberId})`).join('\n') || '_None_';
+        raw = await pollFactionMembers(MY_FACTION_ID);
+        list = transformMembers(raw).filter(m => m.isRevivable).map(m => `• ${m.name} (ID: ${m.memberId})`).join('\n') || '_None_';
         await interaction.editReply(`**Revivable members:**\n${list}`);
         break;
       }
       case 'warrevives': {
-        await interaction.deferReply({ ephemeral: true });
         const watchedIds = watchedFactions.map(w => w.factionId);
-        const id = options.getInteger('id');
-        if (!id) {
-          return interaction.editReply(`Please specify a faction ID: ${watchedIds.join(', ')}`);
-        }
-        if (!watchedIds.includes(id)) {
-          return interaction.editReply(`⚠️ Faction ${id} is not watched. Valid IDs: ${watchedIds.join(', ')}`);
-        }
-        const raw = await pollFactionMembers(id);
-        const members = transformMembers(raw);
-        await EnemyFaction.findOneAndUpdate(
-          { factionId: id },
-          { monitoredAt: new Date(), members },
-          { upsert: true }
-        );
-        const list = members.filter(m => m.isRevivable).map(m => `• ${m.name} (ID: ${m.memberId})`).join('\n') || '_None_';
-        await interaction.editReply(`**Enemy faction ${id} revivable members:**\n${list}`);
+        const id = options.getInteger('id') || watchedIds[0];
+        raw = await pollFactionMembers(id);
+        list = transformMembers(raw).filter(m => m.isRevivable).map(m => `• ${m.name} (ID: ${m.memberId})`).join('\n') || '_None_';
+        await interaction.editReply(`**Enemy faction ${id} revives:**\n${list}`);
         break;
       }
       case 'oc': {
-        await interaction.deferReply();
-        const raw = await pollFactionMembers(MY_FACTION_ID);
-        const members = transformMembers(raw);
-        await Faction.findOneAndUpdate(
-          { factionId: MY_FACTION_ID },
-          { monitoredAt: new Date(), members },
-          { upsert: true }
-        );
-        const list = members.filter(m => !m.isInOc).map(m => `• ${m.name} (ID: ${m.memberId})`).join('\n') || '_None_';
-        await interaction.editReply(`**Members NOT in OC:**\n${list}`);
+        raw = await pollFactionMembers(MY_FACTION_ID);
+        list = transformMembers(raw).filter(m => !m.isInOc).map(m => `• ${m.name} (ID: ${m.memberId})`).join('\n') || '_None_';
+        await interaction.editReply(`**Not in OC:**\n${list}`);
         break;
       }
       case 'cleanup': {
         const count = options.getInteger('count') || 10;
-        await interaction.reply({ content: `Deleting ${count} messages…`, ephemeral: true });
         const msgs = await interaction.channel.messages.fetch({ limit: count });
         await interaction.channel.bulkDelete(msgs, true);
         break;
       }
       case 'prewar': {
-        await interaction.deferReply({ ephemeral: true });
         await upsertFactionSnapshot();
-        await interaction.editReply('✅ Faction snapshot saved.');
+        await interaction.editReply('✅ Snapshot saved.');
         break;
       }
       default:
-        break;
+        await interaction.editReply('⚠️ Unknown command.');
     }
   } catch (err) {
     console.error(`Error executing ${commandName}:`, err);
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply(`❌ Error: ${err.message}`);
-    } else {
-      await interaction.reply({ content: `❌ Error: ${err.message}`, ephemeral: true });
-    }
+    await interaction.editReply(`❌ ${err.message}`);
   }
 });
 
