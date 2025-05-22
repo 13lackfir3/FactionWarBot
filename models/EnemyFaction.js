@@ -1,6 +1,11 @@
-// models/EnemyFaction.js
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+
+// sub-document schema for watch history entries
+const WatchHistorySchema = new Schema({
+  reason:    { type: String, required: true },
+  timestamp: { type: Date,   default: Date.now }
+}, { _id: false });
 
 // sub-document schema for members
 const MemberSchema = new Schema({
@@ -11,8 +16,9 @@ const MemberSchema = new Schema({
   reviveSetting:String,
   isRevivable:  Boolean,
   status: {
-    state:       String,
     description: String,
+    details:     String,
+    state:       String,
     until:       Date
   },
   lastAction: {
@@ -36,6 +42,7 @@ const MemberSchema = new Schema({
 const EnemyFactionSchema = new Schema({
   factionId:   { type: Number, required: true, unique: true, index: true },
   monitoredAt: { type: Date,   default: Date.now },
+  watchHistory: [ WatchHistorySchema ],
   warStatus: {
     status:     String,
     opponentId: Number,
