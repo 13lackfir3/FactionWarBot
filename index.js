@@ -25,7 +25,7 @@ const MONGO_URI          = process.env.MONGO_URI;
 const HOSPITAL_INTERVAL  = 60 * 1000;       // 1 minute poll
 const SNAPSHOT_INTERVAL  = 15 * 60 * 1000;  // 15 minutes snapshot
 const HOSPITAL_WEBHOOK   = process.env.HOSPITAL_WEBHOOK_URL;
-const FACTION_ROLE       = process.env.ALLOWED_ROLES; // role ID for @Faction Member
+const FACTION_ROLE       = process.env.FACTION_ROLE_ID; // role ID for @Faction Member
 
 // Models & services
 const { pollFactionMembers }   = require('./services/pollFaction');
