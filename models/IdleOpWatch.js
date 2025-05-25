@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
 // Schema for idle-op watch entries
-IdleOpWatchSchema = new Schema({
+const IdleOpWatchSchema = new Schema({
   userId: { type: Number, required: true, unique: true, index: true },
   name:   { type: String, required: true },
   lastAction: {

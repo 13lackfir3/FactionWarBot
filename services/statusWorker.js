@@ -11,16 +11,16 @@ async function checkIdleOps() {
 
     // shallow compare status + timestamp (or JSON.stringify)
     if (
-      fresh.last_action.status !== prev.status ||
-      fresh.last_action.timestamp !== Math.floor(prev.timestamp?.getTime()/1000)
+      fresh.last_action.status !== prev.status
+      // ignore timestamp-only changes
     ) {
       // send alert
       await webhook.send({
-        username: 'IdleOp Watcher',
-        content: `👀 **${fresh.name}** (ID:${fresh.id}) status changed:\n` +
-                 `• status: ${fresh.status.state}\n` +
-                 `• lastAction.status: ${fresh.last_action.status}\n` +
-                 `• lastAction.relative: ${fresh.last_action.relative}`
+      username: 'OverWatch',
+      content: `👀 **${fresh.name}** (ID:${fresh.id}) status changed:\n` +
+           `• status: ${fresh.status.state}\n` +
+           `• lastAction.status: ${fresh.last_action.status}\n` +
+           `• lastAction.relative: ${fresh.last_action.relative}`
       });
 
       // update DB
