@@ -193,7 +193,13 @@ client.on('interactionCreate', async interaction => {
       case 'revives': {/* unchanged */} break;
       case 'warrevives': {/* unchanged */} break;
       case 'oc': {/* unchanged */} break;
-      case 'cleanup': {/* unchanged */} break;
+      case 'cleanup': {
+        const count = options.getInteger('count') || 10;
+        const channel = interaction.channel;
+        const messages = await channel.messages.fetch({ limit: count });
+        await channel.bulkDelete(messages, true);
+        await interaction.editReply(`✅ Deleted ${messages.size} messages.`);
+      } break;
       case 'prewar': {/* unchanged */} break;
       case 'status': {
         // now showing online/idle/offline instead of hospital state
