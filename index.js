@@ -149,7 +149,8 @@ const commands = [
   { name: 'warrevives', description: 'List enemy revivable members',     options: [{ name: 'id', type: 4, description: 'Faction ID', required: false }] },
   { name: 'oc',         description: 'List members not in OC' },
   { name: 'cleanup',    description: 'Bulk delete messages',             options: [{ name: 'count', type: 4, description: 'Number to remove', required: false }], defaultMemberPermissions: PermissionFlagsBits.ManageMessages.toString() },
-  { name: 'prewar',     description: 'Snapshot your faction data' }
+  { name: 'prewar',     description: 'Snapshot your faction data' },
+  { name: 'status',     description: 'Show current faction status' }
 ];
 
 // Register slash commands
@@ -181,20 +182,27 @@ client.once('ready', () => {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
   const { commandName, options } = interaction;
-  await interaction.deferReply({ ephemeral: commandName === 'cleanup' });
+  await interaction.deferReply({ ephemeral: commandName === 'cleanup' || commandName === 'status' });
 
   try {
-    let raw, list;
     switch (commandName) {
-      case 'start': { /* unchanged */ break; }
-      case 'stop': { /* unchanged */ break; }
-      case 'starthosp': { /* unchanged */ break; }
-      case 'stophosp': { /* unchanged */ break; }
-      case 'revives': { /* unchanged */ break; }
-      case 'warrevives': { /* unchanged */ break; }
-      case 'oc': { /* unchanged */ break; }
-      case 'cleanup': { /* unchanged */ break; }
-      case 'prewar': { /* unchanged */ break; }
+      case 'start': {/* unchanged */} break;
+      case 'stop': {/* unchanged */} break;
+      case 'starthosp': {/* unchanged */} break;
+      case 'stophosp': {/* unchanged */} break;
+      case 'revives': {/* unchanged */} break;
+      case 'warrevives': {/* unchanged */} break;
+      case 'oc': {/* unchanged */} break;
+      case 'cleanup': {/* unchanged */} break;
+      case 'prewar': {/* unchanged */} break;
+      case 'status': {
+        // now showing online/idle/offline instead of hospital state
+        const rawApi = await pollFactionMembers(MY_FACTION_ID);
+        const list = rawApi
+          .map(m => `• ${m.name} (ID: ${m.id}): ${m.last_action.status}`)
+          .join('\n') || '_None_';
+        await interaction.editReply(`**Current status:**\n${list}`);
+      } break;
       default:
         await interaction.editReply('⚠️ Unknown command.');
     }
