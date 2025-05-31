@@ -1,41 +1,62 @@
-const IdleOp      = require('./models/IdleOp');
-const { pollUserStatus } = require('./services/pollUserStatus');
-const { SILENT_WEBHOOK_URL } = process.env;
-const webhook = new WebhookClient({ url: SILENT_WEBHOOK_URL });
+const { pollUserStatus } = require('./pollUserStatus');
+const IdleOpWatch        = require('../models/IdleOpWatch');
+const { WebhookClient }  = require('discord.js');
 
-async function checkIdleOps() {
-  const all = await IdleOp.find().lean();
-  for (const doc of all) {
-    const fresh = await pollUserStatus(doc.userId);
-    const prev   = doc.lastAction || {};
+// Webhook for idle-op notifications
+const silentWebhook = new WebhookClient({ url: process.env.SILENT_WEBHOOK_URL });
 
-    // shallow compare status + timestamp (or JSON.stringify)
-    if (
-      fresh.last_action.status !== prev.status
-      // ignore timestamp-only changes
-    ) {
-      // send alert
-      await webhook.send({
-      username: 'OverWatch',
-      content: `👀 **${fresh.name}** (ID:${fresh.id}) status changed:\n` +
-           `• status: ${fresh.status.state}\n` +
-           `• lastAction.status: ${fresh.last_action.status}\n` +
-           `• lastAction.relative: ${fresh.last_action.relative}`
-      });
-
-      // update DB
-      await IdleOp.findOneAndUpdate(
-        { userId: fresh.id },
-        { name: fresh.name,
-          lastAction: {
-            status:    fresh.last_action.status,
-            timestamp: new Date(fresh.last_action.timestamp * 1000),
-            relative:  fresh.last_action.relative
-          }
+/**
+ * Polls each watched user and notifies only when status changes.
+ * Compares against the DB-stored lastAction.
+ * Mentions captains only when the status transitions to 'offline'.
+ */
+let isInitialRun = true;
+async function checkIdleOpStatus() {
+  try {
+    const watches = await IdleOpWatch.find();
+      // Seed DB on first run without sending notifications
+      if (isInitialRun) {
+        for (const watchInit of watches) {
+          await IdleOpWatch.updateOne(
+            { userId: watchInit.userId },
+            { lastAction: watchInit.lastAction || {} }
+          );
         }
-      );
+        isInitialRun = false;
+        return;
+      }
+    for (const watch of watches) {
+      const userId = watch.userId;
+      // fetch current status
+      const { name, status: { last_action: curr } } = await pollUserStatus(userId);
+      const currStatus = curr.status;
+      const prevStatus = watch.lastAction?.status;
+
+      // Only proceed if status has changed
+      if (prevStatus !== currStatus) {
+        // Update DB with new status and timestamp
+        await IdleOpWatch.updateOne(
+          { userId },
+          { lastAction: curr }
+        );
+
+        // Mention captains when status is online or offline
+        const mention = ['offline'].includes(currStatus)
+          ? `<@&${process.env.CAPTAIN_ROLE_ID}> `
+          : '';
+
+        // Send notification
+        await silentWebhook.send({
+          username: 'D4 Intelligence',
+          content: `${mention}👀 **${name}** is now **${currStatus}**
+          (${new Date(curr.timestamp * 1000).toISOString()})`
+        });
+      }
+      // else, no action
     }
+  } catch (err) {
+    console.error('IdleOp status worker error:', err);
   }
 }
 
-module.exports = { checkIdleOps };
+module.exports = { checkIdleOpStatus };

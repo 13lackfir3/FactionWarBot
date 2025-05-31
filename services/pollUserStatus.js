@@ -1,37 +1,41 @@
 // services/pollUserStatus.js
-// Fetches a single Torn user’s online status from the API
-
 const axios = require('axios');
-const { TORN_API_KEY } = process.env;
 
 /**
- * Poll a user’s current status (online/offline/idle) and last action
- * @param {number} userId - Torn user ID
- * @returns {Promise<Object>} - { id, name, status: { state, details, last_action: { status, timestamp, relative } } }
+ * Fetches a user's online/idle/offline status from Torn API v1 or v2.
+ * @param {number|string} userId
+ * @returns {Promise<{ id: number, name: string, status: { last_action: { status: string, timestamp: number, relative: string } } }>}
  */
 async function pollUserStatus(userId) {
-  const url = `https://api.torn.com/v2/user/${userId}`
-            + `?selections=profile&key=${TORN_API_KEY}&striptags=true`;
-  const res = await axios.get(url);
-  if (res.data.error) throw new Error(res.data.error.error);
+  const apiKey = process.env.TORN_API_KEY;
+  if (!apiKey) throw new Error('TORN_API_KEY is not set in environment');
 
-  // Torn returns the full user object at root
-  const user = res.data;
+  const url = `https://api.torn.com/v2/user/${userId}?selections=profile&key=${apiKey}&striptags=true`;
+  const res = await axios.get(url);
+  const data = res.data;
+  if (!data) throw new Error(`No data returned for user ${userId}`);
+  if (data.error) {
+    throw new Error(data.error.error || data.error);
+  }
+
+  // Support v2 (contains data.profile) or v1 (returns profile at root)
+  const payload = data.data ? data.data : data;
+  const profile = payload.profile || payload;
+  if (!profile || (!profile.player_id && !profile.id)) {
+    throw new Error(`No profile returned for user ${userId}`);
+  }
+
+  const la = profile.last_action || {};
   return {
-    id: user.user_id || user.id,
-    name: user.name,
+    id: profile.player_id || profile.id,
+    name: profile.name,
     status: {
-      state:       user.status.state,
-      details:     user.status.description || null,
       last_action: {
-        status:    user.last_action.status,
-        timestamp: user.last_action.timestamp,
-        relative:  user.last_action.relative
+        status:    la.status || 'unknown',
+        timestamp: la.timestamp || 0,
       }
     }
   };
 }
 
-module.exports = {
-  pollUserStatus
-};
+module.exports = { pollUserStatus };
